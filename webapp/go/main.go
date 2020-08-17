@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -912,8 +913,16 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	itemDetails := []ItemDetail{}
-	for _, item := range items {
+	type SsrErr struct {
+		ssrPtr *APIShipmentStatusRes
+		err    error
+	}
+	ssrErrs := make([]SsrErr, len(items))
+	itemDetails := make([]ItemDetail, len(items))
+
+	wg := sync.WaitGroup{}
+
+	for i, item := range items {
 		seller, err := getUserSimpleByID(tx, item.SellerID)
 		if err != nil {
 			outputErrorMsg(w, http.StatusNotFound, "seller not found")
@@ -981,23 +990,41 @@ func getTransactions(w http.ResponseWriter, r *http.Request) {
 				tx.Rollback()
 				return
 			}
-			ssr, err := APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
-				ReserveID: shipping.ReserveID,
-			})
-			if err != nil {
-				log.Print(err)
-				outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
-				tx.Rollback()
-				return
-			}
 
 			itemDetail.TransactionEvidenceID = transactionEvidence.ID
 			itemDetail.TransactionEvidenceStatus = transactionEvidence.Status
-			itemDetail.ShippingStatus = ssr.Status
+
+			wg.Add(1)
+			go func(i int, shipping Shipping) {
+				defer wg.Done()
+
+				if transactionEvidence.ID > 0 {
+					ssrErrs[i].ssrPtr, ssrErrs[i].err = APIShipmentStatus(getShipmentServiceURL(), &APIShipmentStatusReq{
+						ReserveID: shipping.ReserveID,
+					})
+				}
+
+			}(i, shipping)
+		} else {
+			ssrErrs[i].ssrPtr = nil
 		}
 
-		itemDetails = append(itemDetails, itemDetail)
+		itemDetails[i] = itemDetail
 	}
+	wg.Wait()
+
+	for i, ssrErr := range ssrErrs {
+		if ssrErr.err != nil {
+			log.Print(ssrErr.err)
+			outputErrorMsg(w, http.StatusInternalServerError, "failed to request to shipment service")
+			tx.Rollback()
+			return
+		}
+		if ssrErr.ssrPtr != nil {
+			itemDetails[i].ShippingStatus = ssrErr.ssrPtr.Status
+		}
+	}
+
 	tx.Commit()
 
 	hasNext := false
