@@ -1,0 +1,15 @@
+[Unit]
+Description=isucon9-qualify-go
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sawahara/go/src/github.com/isucon/isucon9-qualify/webapp/go
+Environment="GO111MODULE=on"
+ExecStart=bash -c "go run api.go main.go"
+User=sawahara
+Group=sawahara
+
+[Install]
+WantedBy=multi-user.target
+
