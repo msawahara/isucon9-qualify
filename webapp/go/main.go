@@ -269,6 +269,8 @@ type resSetting struct {
 	Categories        []Category `json:"categories"`
 }
 
+var categoryCache map[int]Category = make(map[int]Category)
+
 func init() {
 	store = sessions.NewCookieStore([]byte("abc"))
 
@@ -320,6 +322,8 @@ func main() {
 	}
 	defer dbx.Close()
 
+	makeCache()
+
 	mux := goji.NewMux()
 
 	// API
@@ -358,6 +362,28 @@ func main() {
 	// Assets
 	mux.Handle(pat.Get("/*"), http.FileServer(http.Dir("../public")))
 	log.Fatal(http.ListenAndServe(":8000", mux))
+}
+
+func makeCache() {
+	categories := []Category{}
+
+	err := dbx.Select(&categories, "SELECT * FROM `categories`")
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	for _, v := range categories {
+		categoryCache[v.ID] = v
+	}
+	for k, _ := range categoryCache {
+		pid := categoryCache[k].ParentID
+		if pid != 0 {
+			category := categoryCache[k]
+			category.ParentCategoryName = categoryCache[pid].CategoryName
+			categoryCache[k] = category
+		}
+	}
 }
 
 func getSession(r *http.Request) *sessions.Session {
@@ -409,6 +435,10 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 }
 
 func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err error) {
+	if category, ok := categoryCache[categoryID]; ok {
+		return category, nil
+	}
+
 	err = sqlx.Get(q, &category, "SELECT * FROM `categories` WHERE `id` = ?", categoryID)
 	if category.ParentID != 0 {
 		parentCategory, err := getCategoryByID(q, category.ParentID)
